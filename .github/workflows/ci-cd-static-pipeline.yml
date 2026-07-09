@@ -1,0 +1,276 @@
+name: CI/CD Static Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-static-production
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI - Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint --if-present
+
+      - name: Run tests
+        run: npm run test --if-present
+
+  cd:
+    name: CD - Build and Deploy Files
+    needs: ci
+    runs-on: ubuntu-latest
+    env:
+      REMOTE_ARCHIVE_PATH: /home/${{ secrets.SERVER_USER }}/dist.tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "SERVER_SSH_KEY is empty or was not configured in GitHub Secrets."
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/server_key
+          chmod 600 ~/.ssh/server_key
+          if ! ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts; then
+            echo "Could not add SERVER_HOST to known_hosts. Check SERVER_HOST in GitHub Secrets."
+            exit 1
+          fi
+
+      - name: Validate SSH connection
+        run: |
+          if ! ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "echo 'SSH connection validated.'"; then
+            echo "Could not connect to the server using SSH. Check SERVER_HOST, SERVER_USER, SERVER_SSH_KEY, and the authorized public key."
+            exit 1
+          fi
+
+      - name: Fetch optional build environment from server
+        run: |
+          if ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "test -f ~/.env"; then
+            ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "cat ~/.env" > .server.env
+            echo "Remote ~/.env found and loaded for the static build."
+          else
+            : > .server.env
+            echo "Remote ~/.env was not found. Continuing static build without server environment variables."
+          fi
+
+      - name: Build static site
+        run: |
+          if [ -s .server.env ]; then
+            set -a
+            . ./.server.env
+            set +a
+          fi
+
+          if ! npm run build; then
+            echo "Static build failed. Check the build script and required build-time variables."
+            exit 1
+          fi
+
+      - name: Validate build output
+        run: |
+          if [ ! -d dist ]; then
+            echo "Build output directory 'dist' was not found."
+            exit 1
+          fi
+
+          if [ ! -f dist/index.html ]; then
+            echo "Static build did not generate dist/index.html."
+            exit 1
+          fi
+
+          if [ ! -f dist/admin/index.html ] || [ ! -f dist/admin/config.yml ]; then
+            echo "Static CMS admin files were not generated."
+            exit 1
+          fi
+
+      - name: Create deployment archive
+        run: |
+          if ! tar -czf dist.tar.gz -C dist .; then
+            echo "Could not create dist.tar.gz from the dist directory."
+            exit 1
+          fi
+
+      - name: Upload archive to server via SCP
+        run: |
+          if ! scp -i ~/.ssh/server_key dist.tar.gz "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${REMOTE_ARCHIVE_PATH}"; then
+            echo "Could not upload dist.tar.gz to the server. Check SSH credentials and available disk space."
+            exit 1
+          fi
+
+      - name: Resolve target directory on server
+        id: resolve_target_dir
+        run: |
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            set -e
+            TARGET_DIR=\"\$(find \"\$HOME\" -maxdepth 1 \( -type l -o -type d \) -name '*.configr.cloud' 2>/dev/null | sort | while IFS= read -r candidate; do
+              [ -d \"\$candidate/www\" ] && printf '%s\n' \"\$candidate/www\"
+            done | head -n 1)\"
+
+            if [ -z \"\$TARGET_DIR\" ]; then
+              echo 'Could not find a target *.configr.cloud/www directory on the server.'
+              echo 'Create an HTML application in the hosting panel before running this workflow.'
+              exit 1
+            fi
+
+            printf '%s' \"\$TARGET_DIR\"
+          " > .target-dir
+
+          test -s .target-dir
+          TARGET_DIR="$(tr -d '\r' < .target-dir)"
+          BACKUP_DIR="$(dirname "$TARGET_DIR")/www-backup-tmp"
+          printf 'target_dir=%s\n' "$TARGET_DIR" >> "$GITHUB_OUTPUT"
+          printf 'backup_dir=%s\n' "$BACKUP_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Show resolved target directory
+        run: |
+          echo "Target directory: ${{ steps.resolve_target_dir.outputs.target_dir }}"
+          test -n "${{ steps.resolve_target_dir.outputs.target_dir }}"
+
+      - name: Validate deployment archive on server
+        run: |
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            if [ ! -f \"${REMOTE_ARCHIVE_PATH}\" ]; then
+              echo 'Deployment archive was not found on the server after upload.'
+              exit 1
+            fi
+          "
+
+      - name: Publish static files on server
+        run: |
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            set -e
+            ARCHIVE_PATH=\"${REMOTE_ARCHIVE_PATH}\"
+            TARGET_DIR=\"${{ steps.resolve_target_dir.outputs.target_dir }}\"
+            BACKUP_DIR=\"${{ steps.resolve_target_dir.outputs.backup_dir }}\"
+
+            restore_previous() {
+              if [ -d \"\$BACKUP_DIR\" ]; then
+                find \"\$TARGET_DIR\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+                cp -a \"\$BACKUP_DIR/.\" \"\$TARGET_DIR/\" 2>/dev/null || true
+              fi
+            }
+
+            mkdir -p \"\$TARGET_DIR\"
+            rm -rf -- \"\$BACKUP_DIR\"
+            mkdir -p \"\$BACKUP_DIR\"
+            cp -a \"\$TARGET_DIR/.\" \"\$BACKUP_DIR/\" 2>/dev/null || true
+
+            if ! find \"\$TARGET_DIR\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +; then
+              echo 'Could not clean the target www directory before publishing.'
+              restore_previous
+              exit 1
+            fi
+
+            if ! tar -xzf \"\$ARCHIVE_PATH\" -C \"\$TARGET_DIR\"; then
+              echo 'Could not extract the static archive into the target www directory.'
+              restore_previous
+              exit 1
+            fi
+
+            rm -f \"\$ARCHIVE_PATH\"
+          "
+
+      - name: Validate published static site
+        run: |
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            set -e
+            TARGET_DIR=\"${{ steps.resolve_target_dir.outputs.target_dir }}\"
+
+            if [ ! -f \"\$TARGET_DIR/index.html\" ]; then
+              echo 'Published site validation failed: index.html was not found in the target directory.'
+              exit 1
+            fi
+          "
+
+      - name: Restore previous static files on failure
+        if: failure()
+        run: |
+          TARGET_DIR="${{ steps.resolve_target_dir.outputs.target_dir }}"
+          BACKUP_DIR="${{ steps.resolve_target_dir.outputs.backup_dir }}"
+
+          if [ -z "$TARGET_DIR" ] || [ -z "$BACKUP_DIR" ] || [ ! -f ~/.ssh/server_key ]; then
+            echo "Target directory, backup directory, or SSH key is not available. Skipping static rollback."
+            exit 0
+          fi
+
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            set -e
+
+            if [ ! -d \"$BACKUP_DIR\" ]; then
+              echo 'No previous static backup was found. Skipping rollback.'
+              exit 0
+            fi
+
+            find \"$TARGET_DIR\" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+            cp -a \"$BACKUP_DIR/.\" \"$TARGET_DIR/\" 2>/dev/null || true
+            echo 'Previous static files were restored after deployment failure.'
+          "
+
+      - name: Remove uploaded archive
+        if: always()
+        run: |
+          if [ ! -f ~/.ssh/server_key ]; then
+            echo "SSH key was not configured. Skipping remote archive cleanup."
+            exit 0
+          fi
+
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            rm -f -- \"${REMOTE_ARCHIVE_PATH}\"
+          "
+
+      - name: Remove temporary static backup
+        if: always()
+        run: |
+          BACKUP_DIR="${{ steps.resolve_target_dir.outputs.backup_dir }}"
+
+          if [ -z "$BACKUP_DIR" ] || [ ! -f ~/.ssh/server_key ]; then
+            echo "Backup directory or SSH key is not available. Skipping static backup cleanup."
+            exit 0
+          fi
+
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            rm -rf -- \"$BACKUP_DIR\"
+          "
+
+      - name: Show published files
+        run: |
+          ssh -i ~/.ssh/server_key "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" "
+            TARGET_DIR=\"${{ steps.resolve_target_dir.outputs.target_dir }}\"
+
+            ls -la \"\$TARGET_DIR\"
+          "

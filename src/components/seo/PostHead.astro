@@ -1,0 +1,82 @@
+---
+import { SITE_DESCRIPTION, SITE_TITLE } from "@/config/consts";
+
+export interface Props {
+  title: string;
+  slug: string;
+  description?: string;
+  imageURL?: string;
+  canonicalURL?: string;
+  publishedTime: Date;
+  modifiedTime?: Date;
+  author?: string;
+  tags?: string[];
+}
+
+const {
+  title,
+  slug,
+  description,
+  imageURL,
+  canonicalURL,
+  publishedTime,
+  modifiedTime,
+  author,
+  tags = [],
+} = Astro.props;
+
+if (!Astro.site) {
+  throw new Error("Astro.site precisa estar definido no astro.config.mjs.");
+}
+
+const canonicalFormatted = new URL(
+  canonicalURL ?? `/blog/${slug}/`,
+  Astro.site,
+).toString();
+
+const descriptionFormatted = description?.trim() || SITE_DESCRIPTION;
+const imageFormatted = imageURL
+  ? new URL(imageURL, Astro.site).toString()
+  : undefined;
+
+const publishedFormatted = publishedTime.toISOString();
+const modifiedFormatted = (modifiedTime ?? publishedTime).toISOString();
+
+const postSchema = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "@id": `${canonicalFormatted}#blogposting`,
+  mainEntityOfPage: {
+    "@id": `${canonicalFormatted}#webpage`,
+  },
+  headline: title,
+  description: descriptionFormatted,
+  url: canonicalFormatted,
+  inLanguage: "pt-BR",
+  datePublished: publishedFormatted,
+  dateModified: modifiedFormatted,
+  ...(imageFormatted ? { image: [imageFormatted] } : {}),
+  ...(author
+    ? {
+        author: {
+          "@type": "Person",
+          name: author,
+        },
+      }
+    : {}),
+  publisher: {
+    "@type": "Organization",
+    name: SITE_TITLE,
+  },
+  ...(tags.length ? { keywords: tags.join(", ") } : {}),
+};
+
+const schemaFormatted = JSON.stringify(postSchema).replace(/</g, "\\u003c");
+---
+
+<meta property="article:published_time" content={publishedFormatted} />
+<meta property="article:modified_time" content={modifiedFormatted} />
+{author && <meta property="article:author" content={author} />}
+{tags.map((tag) => <meta property="article:tag" content={tag} />)}
+
+<script is:inline type="application/ld+json" set:html={schemaFormatted} />

@@ -1,0 +1,78 @@
+---
+import FormattedDate from "@/components/blog/post/FormattedDate.astro";
+import placeholder from "@/assets/post-placeholder.png";
+import { Image } from "astro:assets";
+import { getPostData, type Post } from "@/utils/blog";
+import Tags from "@/components/blog/post/Tags.astro";
+
+interface Props {
+  post: Post;
+  activeTag?: string;
+}
+
+const { post, activeTag } = Astro.props;
+
+const {
+  title,
+  slug,
+  createdTime,
+  cover,
+  coverAlt = title,
+  tags,
+} = getPostData(post);
+
+const publicCover = typeof cover === "string" ? cover : undefined;
+const optimizedCover = typeof cover === "string" ? undefined : cover;
+---
+
+<article class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
+  <a href={"/blog/" + slug} data-astro-prefetch="hover" class="block">
+    <div class="overflow-hidden border-b border-zinc-200 relative">
+      {
+        publicCover ? (
+          <img
+            width="670"
+            height="377"
+            src={publicCover}
+            alt={coverAlt}
+            decoding="async"
+            loading="lazy"
+            class="h-full w-full aspect-video object-center object-cover"
+            transition:name={`${slug}-cover`}
+          />
+        ) : (
+          <Image
+            width={670}
+            widths={[320, 480, 670]}
+            sizes="(min-width: 1138px) 502px, (min-width: 768px) calc((90vw - 20px) / 2), 90vw"
+            src={optimizedCover ?? placeholder}
+            alt={coverAlt}
+            decoding="async"
+            loading="lazy"
+            format="webp"
+            class="h-full w-full aspect-video object-center object-cover"
+            transition:name={`${slug}-cover`}
+          />
+        )
+      }
+      <Tags
+        tags={tags}
+        class="justify-end absolute m-4 top-0 right-0 z-50"
+        activeTag={activeTag}
+      />
+    </div>
+  </a>
+
+  <div class="space-y-1 p-5">
+    <a href={"/blog/" + slug} data-astro-prefetch="hover" class="block">
+      <h2 class="text-xl hover:text-zinc-600">{title}</h2>
+    </a>
+    {
+      createdTime && (
+        <p class="text-sm text-zinc-500">
+          <FormattedDate date={createdTime} />
+        </p>
+      )
+    }
+  </div>
+</article>

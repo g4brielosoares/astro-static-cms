@@ -1,0 +1,114 @@
+---
+import { SITE_DESCRIPTION, SITE_IMAGE, SITE_TITLE } from "@/config/consts";
+
+type StructuredData = Record<string, unknown>;
+
+export interface Props {
+  title?: string;
+  description?: string;
+  imageURL?: string;
+  imageAlt?: string;
+  canonicalURL?: string;
+  noindex?: boolean;
+  openGraphType?: string;
+  structuredData?: StructuredData | StructuredData[];
+}
+
+const {
+  title = SITE_TITLE,
+  description,
+  imageURL = SITE_IMAGE,
+  imageAlt,
+  canonicalURL,
+  noindex = false,
+  openGraphType = "website",
+  structuredData = [],
+} = Astro.props;
+
+if (!Astro.site) {
+  throw new Error("Astro.site precisa estar definido no astro.config.mjs.");
+}
+
+const titleFormatted =
+  title === SITE_TITLE ? SITE_TITLE : `${title} - ${SITE_TITLE}`;
+
+const descriptionFormatted = description?.trim() || SITE_DESCRIPTION;
+
+const canonicalFormatted = canonicalURL
+  ? new URL(canonicalURL, Astro.site).toString()
+  : new URL(Astro.url.pathname, Astro.site).toString();
+
+const imageFormatted = new URL(imageURL, Astro.site).toString();
+const imageAltFormatted = imageAlt?.trim() || titleFormatted;
+
+const robots = noindex
+  ? "noindex, nofollow"
+  : "index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1";
+
+const pageSchema = {
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "@id": `${canonicalFormatted}#webpage`,
+  url: canonicalFormatted,
+  name: titleFormatted,
+  description: descriptionFormatted,
+  inLanguage: "pt-BR",
+  isPartOf: {
+    "@type": "WebSite",
+    "@id": `${Astro.site}#website`,
+    url: Astro.site.toString(),
+    name: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    inLanguage: "pt-BR",
+  },
+  primaryImageOfPage: {
+    "@type": "ImageObject",
+    url: imageFormatted,
+    caption: imageAltFormatted,
+  },
+};
+
+const schemaGraph = [
+  pageSchema,
+  ...(Array.isArray(structuredData) ? structuredData : [structuredData]),
+].filter(Boolean);
+
+const schemaFormatted = JSON.stringify(
+  schemaGraph.length === 1
+    ? schemaGraph[0]
+    : {
+        "@context": "https://schema.org",
+        "@graph": schemaGraph,
+      },
+).replace(/</g, "\\u003c");
+---
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" type="image/x-icon" href="/favicon.ico" />
+<link rel="icon" type="image/png" href="/favicon.png" />
+<link rel="canonical" href={canonicalFormatted} />
+<meta name="generator" content={Astro.generator} />
+<meta name="robots" content={robots} />
+<link rel="sitemap" href="/sitemap-index.xml" />
+
+<title>{titleFormatted}</title>
+<meta name="description" content={descriptionFormatted} />
+
+<meta property="og:type" content={openGraphType} />
+<meta property="og:url" content={canonicalFormatted} />
+<meta property="og:title" content={titleFormatted} />
+<meta property="og:description" content={descriptionFormatted} />
+<meta property="og:image" content={imageFormatted} />
+<meta property="og:image:alt" content={imageAltFormatted} />
+<meta property="og:site_name" content={SITE_TITLE} />
+<meta property="og:locale" content="pt_BR" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:url" content={canonicalFormatted} />
+<meta name="twitter:title" content={titleFormatted} />
+<meta name="twitter:description" content={descriptionFormatted} />
+<meta name="twitter:image" content={imageFormatted} />
+<meta name="twitter:image:alt" content={imageAltFormatted} />
+
+<script is:inline type="application/ld+json" set:html={schemaFormatted} />

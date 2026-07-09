@@ -1,0 +1,29 @@
+{
+  "hero": {
+    "eyebrow": "Astro + Sveltia CMS",
+    "title": "Um template simples para publicar conteúdo com Astro.",
+    "description": "Use esta base como ponto de partida para sites pequenos e blogs gerenciados por um CMS Git-backed.",
+    "primaryLink": {
+      "label": "Ver posts",
+      "href": "/blog"
+    },
+    "secondaryLink": {
+      "label": "Abrir admin",
+      "href": "/admin/"
+    }
+  },
+  "features": [
+    {
+      "title": "Estrutura pequena",
+      "description": "Páginas, layouts, estilos e helpers ficam separados, mas sem camadas desnecessárias."
+    },
+    {
+      "title": "Tailwind direto",
+      "description": "Classes utilitárias simples para que você consiga trocar o visual rapidamente."
+    },
+    {
+      "title": "CMS embutido",
+      "description": "O painel em /admin publica Markdown em src/content/blog e dispara o deploy estatico pelo GitHub."
+    }
+  ]
+}
